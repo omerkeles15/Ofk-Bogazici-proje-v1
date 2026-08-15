@@ -4,7 +4,7 @@
 
 export const DEFAULT_COIL_ROW = {
   plcTag: '',
-  coilAddress: 0,
+  coilAddress: 2048,
   tagName: '',
   description: '',
 }
@@ -94,6 +94,23 @@ export function computeAutoAddresses(registers, startAddress = 4096) {
 /**
  * Register dizisinin toplam word sayısını hesaplar.
  */
+
+
+/**
+ * Coil dizisi ve başlangıç adresinden tüm satırların
+ * coilAddress ve plcTag değerlerini otomatik hesaplar.
+ * Delta DVP: 2048=M0, 2049=M1, ... (ardışık, her coil 1 bit)
+ * @param {Array} coils - [{tagName, description, ...}]
+ * @param {number} startAddress - İlk coil'in Modbus adresi (default: 2048)
+ * @returns {Array} - Hesaplanmış coilAddress ve plcTag ile zenginleştirilmiş dizi
+ */
+export function computeAutoCoilAddresses(coils, startAddress = 2048) {
+  return coils.map((coil, idx) => ({
+    ...coil,
+    coilAddress: startAddress + idx,
+    plcTag: `M${(startAddress + idx) - 2048}`,
+  }))
+}
 export function computeTotalWords(registers) {
   return registers.reduce((sum, reg) => sum + getWordSize(reg.dataType || 'W'), 0)
 }

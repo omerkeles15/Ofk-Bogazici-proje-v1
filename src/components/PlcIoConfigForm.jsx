@@ -1,5 +1,5 @@
 import { useState, useEffect, memo, useCallback } from 'react'
-import { normalizeConfig, resizeArray, DEFAULT_COIL_ROW, DEFAULT_REGISTER_ROW, getWordSize, computeAutoAddresses, computeTotalWords, clampValue } from '../features/device/plcIoUtils'
+import { normalizeConfig, resizeArray, DEFAULT_COIL_ROW, DEFAULT_REGISTER_ROW, getWordSize, computeAutoAddresses, computeAutoCoilAddresses, computeTotalWords, clampValue } from '../features/device/plcIoUtils'
 import { DATA_TYPE_OPTIONS, DEFAULT_MODBUS_TIMING } from '../features/device/deviceCatalog'
 
 // ─── Satır İçi Düzenlenebilir Hücre (memo ile) ─────────────
@@ -135,8 +135,8 @@ function IoSection({ title, accentColor = 'purple', rows, columns, defaultRow, o
 
 // ─── Sütun Tanımları ────────────────────────────────────────
 const COIL_COLUMNS = [
-  { key: 'plcTag',      label: 'PLC Tag',     type: 'text',   placeholder: 'X0' },
-  { key: 'coilAddress', label: 'Coil Adresi', type: 'number', placeholder: '1025' },
+  { key: 'plcTag',      label: 'PLC Tag',     type: 'text',   readOnly: true, className: 'font-mono text-purple-700 font-bold' },
+  { key: 'coilAddress', label: 'Coil Adresi', type: 'number', readOnly: (idx) => idx > 0 },
   { key: 'tagName',     label: 'Tag İsmi',    type: 'text',   placeholder: 'Tag ismi...' },
   { key: 'description', label: 'Açıklama',    type: 'text',   placeholder: 'Açıklama...' },
 ]
@@ -161,7 +161,9 @@ export default function PlcIoConfigForm({ value, onChange }) {
   }, [config, onChange])
 
   const handleCoilChange = useCallback((rows) => {
-    onChange({ ...config, coils: rows })
+    const startAddr = rows.length > 0 ? (rows[0].coilAddress || 2048) : 2048
+    const computed = computeAutoCoilAddresses(rows, startAddr)
+    onChange({ ...config, coils: computed })
   }, [config, onChange])
 
   const totalWords = computeTotalWords(config.dataRegisters)
@@ -171,12 +173,13 @@ export default function PlcIoConfigForm({ value, onChange }) {
       <p className="text-xs font-semibold text-purple-700 uppercase tracking-wide">I/O Yapılandırma</p>
 
       <IoSection
-        title="Coil Listesi (X, Y, M, C, T, S...)"
+        title="Coil Listesi (M0, M1, M2...)"
         accentColor="purple"
         rows={config.coils}
         columns={COIL_COLUMNS}
         defaultRow={DEFAULT_COIL_ROW}
         onChange={handleCoilChange}
+        badge={config.coils.length > 0 ? `${config.coils.length} Bit` : null}
       />
 
       <IoSection

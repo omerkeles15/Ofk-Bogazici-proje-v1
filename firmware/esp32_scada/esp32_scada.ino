@@ -57,6 +57,18 @@ struct RegisterTable {
     uint16_t startAddr;
 };
 
+// Coil tablosu
+struct CoilEntry {
+    uint16_t address;
+    char     plcTag[12];
+};
+
+struct CoilTable {
+    CoilEntry entries[128];
+    uint8_t   count;
+    uint16_t  startAddr;
+};
+
 // ─────────────────────────────────────────────
 // Forward declarations
 // ─────────────────────────────────────────────
@@ -76,7 +88,9 @@ String buildProvisioningPage(const String& statusMsg = "");
 bool checkDoubleReset();
 void setupModbus();
 void readAndSendRegisters();
+void readAndSendCoils();
 void parseDataRegisters(JsonArray arr);
+void parseCoils(JsonArray arr);
 void sendDataToServer();
 DataType parseDataType(const char* dt);
 uint8_t getWordSizeFromType(DataType dt);
@@ -88,7 +102,9 @@ Preferences prefs;
 WebServer   apServer(80);
 ModbusRTU       mb;
 RegisterTable   g_regTable  = {};
-uint16_t        g_regBuffer[128];    // Okuma buffer (max 128 word)
+CoilTable       g_coilTable = {};
+uint16_t        g_regBuffer[128];    // Register okuma buffer (max 128 word)
+bool            g_coilBuffer[128];   // Coil okuma buffer (max 128 bit)
 bool            g_modbusReady    = false;
 unsigned long   g_lastModbusRead = 0;
 uint32_t        g_readInterval   = 1000;  // ms
@@ -388,26 +404,30 @@ void sendHeartbeat() {
                     g_sendStatusAck    = true;
                     g_pendingStatusAck = g_deviceStatus;
                 }
-                // dataRegisters parse — full config veya diff config
+                // dataRegisters + coils parse — full config veya diff config
                 bool isDiff = cfg["diff"] | false;
                 if (isDiff) {
-                    // Diff config: changed.dataRegisters
                     if (!cfg["changed"].isNull()) {
                         JsonObject changed = cfg["changed"].as<JsonObject>();
                         if (!changed["dataRegisters"].isNull()) {
-                            JsonArray regArr = changed["dataRegisters"].as<JsonArray>();
-                            parseDataRegisters(regArr);
+                            parseDataRegisters(changed["dataRegisters"].as<JsonArray>());
                             Serial.println("[Config] Diff: dataRegisters guncellendi.");
+                        }
+                        if (!changed["coils"].isNull()) {
+                            parseCoils(changed["coils"].as<JsonArray>());
+                            Serial.println("[Config] Diff: coils guncellendi.");
                         }
                     }
                 } else {
-                    // Full config: plc_io_config.dataRegisters
                     if (!cfg["plc_io_config"].isNull()) {
                         JsonObject plcIo = cfg["plc_io_config"].as<JsonObject>();
                         if (!plcIo["dataRegisters"].isNull()) {
-                            JsonArray regArr = plcIo["dataRegisters"].as<JsonArray>();
-                            parseDataRegisters(regArr);
+                            parseDataRegisters(plcIo["dataRegisters"].as<JsonArray>());
                             Serial.println("[Config] Full: dataRegisters yuklendi.");
+                        }
+                        if (!plcIo["coils"].isNull()) {
+                            parseCoils(plcIo["coils"].as<JsonArray>());
+                            Serial.println("[Config] Full: coils yuklendi.");
                         }
                     }
                 }
@@ -493,6 +513,27 @@ void parseDataRegisters(JsonArray arr) {
     }
 }
 
+void parseCoils(JsonArray arr) {
+    g_coilTable.count = 0;
+
+    for (JsonObject obj : arr) {
+        if (g_coilTable.count >= 128) break;
+
+        CoilEntry& entry = g_coilTable.entries[g_coilTable.count];
+        entry.address = obj["coilAddress"] | 0;
+        strncpy(entry.plcTag, obj["plcTag"] | "", 11);
+        entry.plcTag[11] = '\0';
+
+        g_coilTable.count++;
+    }
+
+    if (g_coilTable.count > 0) {
+        g_coilTable.startAddr = g_coilTable.entries[0].address;
+        Serial.printf("[Modbus] %d coil yapilandi. Baslangic=%d\n",
+                      g_coilTable.count, g_coilTable.startAddr);
+    }
+}
+
 void readAndSendRegisters() {
     if (!g_modbusReady || g_regTable.count == 0) return;
     if (g_deviceStatus == "offline") return;
@@ -534,6 +575,39 @@ void readAndSendRegisters() {
     sendDataToServer();
 }
 
+void readAndSendCoils() {
+    if (!g_modbusReady || g_coilTable.count == 0) return;
+    if (g_deviceStatus == "offline") return;
+
+    uint16_t startAddr = g_coilTable.startAddr;
+    uint8_t  count     = g_coilTable.count;
+
+    if (count > 128) count = 128;
+
+    // FC01: Read Coils
+    bool success = false;
+    for (uint8_t attempt = 0; attempt <= g_retryCount; attempt++) {
+        if (mb.readCoil(g_slaveId, startAddr, g_coilBuffer, count)) {
+            unsigned long start = millis();
+            while (mb.slave()) {
+                mb.task();
+                if (millis() - start > g_modbusTimeout) break;
+                delay(1);
+            }
+            if (!mb.slave()) {
+                success = true;
+                break;
+            }
+        }
+        if (attempt < g_retryCount) delay(50);
+    }
+
+    if (!success) {
+        Serial.println("[Modbus] Coil okuma basarisiz.");
+        return;
+    }
+}
+
 void sendDataToServer() {
     if (g_deviceId.isEmpty() || g_deviceStatus == "offline") return;
     if (WiFi.status() != WL_CONNECTED) return;
@@ -552,6 +626,15 @@ void sendDataToServer() {
     doc["timestamp"] = "";
 
     JsonObject data = doc["data"].to<JsonObject>();
+
+    // Coil verileri (ON/OFF)
+    if (g_coilTable.count > 0) {
+        JsonObject coils = data["coils"].to<JsonObject>();
+        for (uint8_t i = 0; i < g_coilTable.count; i++) {
+            coils[g_coilTable.entries[i].plcTag] = g_coilBuffer[i] ? "1" : "0";
+        }
+    }
+
     JsonObject regs = data["dataRegisters"].to<JsonObject>();
 
     // Her register'ı buffer'dan oku ve dataType'a göre parse et
@@ -883,11 +966,12 @@ void loop() {
         sendHeartbeat();
     }
 
-    // Modbus periyodik okuma
-    if (g_modbusReady && g_regTable.count > 0 && g_deviceStatus != "offline") {
+    // Modbus periyodik okuma (register + coil)
+    if (g_modbusReady && g_deviceStatus != "offline") {
         if (now - g_lastModbusRead >= g_readInterval) {
             g_lastModbusRead = now;
-            readAndSendRegisters();
+            if (g_coilTable.count > 0) readAndSendCoils();
+            if (g_regTable.count > 0)  readAndSendRegisters();
         }
     }
 
