@@ -1,0 +1,50 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: scada
+      POSTGRES_USER: scada
+      POSTGRES_PASSWORD: scada123
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scada"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://scada:scada123@postgres:5432/scada
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ofk-scada-production-secret
+      DIST_DIR: /app/dist
+      LOGO_DIR: /app/dist/logo
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./dist:/app/dist
+      - ./public/logo:/app/public/logo
+
+volumes:
+  pgdata:
