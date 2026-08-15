@@ -19,6 +19,11 @@
 #include <Preferences.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <ModbusRTU.h>    // emeliart/modbus-esp8266
+
+#define RS485_RX   16
+#define RS485_TX   17
+#define RS485_DE   4
 
 // ─────────────────────────────────────────────
 // Sabitler
@@ -33,6 +38,24 @@
 #define FIRMWARE_VERSION          "1.4.0"
 #define DEVICE_MODEL              "ESP32-WROOM-32"
 #define NVS_NAMESPACE             "esp32cfg"
+
+// ─────────────────────────────────────────────
+// Modbus Veri Yapıları
+// ─────────────────────────────────────────────
+enum DataType { DT_W = 0, DT_INT = 1, DT_DW = 2, DT_DINT = 3, DT_FLT = 4 };
+
+struct RegisterEntry {
+    uint16_t address;
+    DataType dataType;
+    char     plcTag[12];
+};
+
+struct RegisterTable {
+    RegisterEntry entries[64];
+    uint8_t  count;
+    uint16_t totalWords;
+    uint16_t startAddr;
+};
 
 // ─────────────────────────────────────────────
 // Forward declarations
@@ -51,12 +74,28 @@ void clearAllNVS();
 String buildWifiOptions();
 String buildProvisioningPage(const String& statusMsg = "");
 bool checkDoubleReset();
+void setupModbus();
+void readAndSendRegisters();
+void parseDataRegisters(JsonArray arr);
+void sendDataToServer();
+DataType parseDataType(const char* dt);
+uint8_t getWordSizeFromType(DataType dt);
 
 // ─────────────────────────────────────────────
 // Global değişkenler
 // ─────────────────────────────────────────────
 Preferences prefs;
 WebServer   apServer(80);
+ModbusRTU       mb;
+RegisterTable   g_regTable  = {};
+uint16_t        g_regBuffer[128];    // Okuma buffer (max 128 word)
+bool            g_modbusReady    = false;
+unsigned long   g_lastModbusRead = 0;
+uint32_t        g_readInterval   = 1000;  // ms
+uint32_t        g_modbusTimeout  = 500;   // ms
+uint8_t         g_retryCount     = 2;
+uint8_t         g_slaveId        = 1;
+uint32_t        g_baudRate       = 9600;
 
 String  g_wifiSsid   = "";
 String  g_wifiPass   = "";
@@ -349,6 +388,29 @@ void sendHeartbeat() {
                     g_sendStatusAck    = true;
                     g_pendingStatusAck = g_deviceStatus;
                 }
+                // dataRegisters ve modbus_config parse et
+                if (!cfg["plc_io_config"].isNull()) {
+                    JsonObject plcIo = cfg["plc_io_config"].as<JsonObject>();
+                    if (!plcIo["dataRegisters"].isNull()) {
+                        JsonArray regArr = plcIo["dataRegisters"].as<JsonArray>();
+                        parseDataRegisters(regArr);
+                    }
+                }
+                if (!cfg["modbus_config"].isNull()) {
+                    JsonObject mCfg = cfg["modbus_config"].as<JsonObject>();
+                    g_slaveId       = mCfg["slaveId"] | 1;
+                    g_baudRate      = mCfg["baudRate"] | 9600;
+                    g_readInterval  = mCfg["readInterval"] | 1000;
+                    g_modbusTimeout = mCfg["timeout"] | 500;
+                    g_retryCount    = mCfg["retryCount"] | 2;
+                    Serial.printf("[Modbus] Config: slave=%d baud=%d interval=%d timeout=%d retry=%d\n",
+                                  g_slaveId, g_baudRate, g_readInterval, g_modbusTimeout, g_retryCount);
+                    // Modbus'u yeniden başlat (baud rate değişmiş olabilir)
+                    if (g_modbusReady) {
+                        Serial2.end();
+                    }
+                    setupModbus();
+                }
                 // Bir sonraki heartbeat'e config ACK ekle
                 g_sendConfigAck = true;
             }
@@ -364,6 +426,169 @@ void sendHeartbeat() {
     } else {
         http.end();
     }
+}
+
+// ─────────────────────────────────────────────
+// Modbus RTU Master
+// ─────────────────────────────────────────────
+
+DataType parseDataType(const char* dt) {
+    if (strcmp(dt, "INT") == 0)  return DT_INT;
+    if (strcmp(dt, "DW") == 0)   return DT_DW;
+    if (strcmp(dt, "DINT") == 0) return DT_DINT;
+    if (strcmp(dt, "FLT") == 0)  return DT_FLT;
+    return DT_W;  // Varsayılan
+}
+
+uint8_t getWordSizeFromType(DataType dt) {
+    return (dt >= DT_DW) ? 2 : 1;
+}
+
+void setupModbus() {
+    Serial2.begin(g_baudRate, SERIAL_8N1, RS485_RX, RS485_TX);
+    mb.begin(&Serial2, RS485_DE);
+    mb.master();
+    g_modbusReady = true;
+    Serial.printf("[Modbus] Baslatildi. Slave=%d Baud=%d\n", g_slaveId, g_baudRate);
+}
+
+void parseDataRegisters(JsonArray arr) {
+    g_regTable.count = 0;
+    g_regTable.totalWords = 0;
+
+    for (JsonObject obj : arr) {
+        if (g_regTable.count >= 64) break;
+
+        RegisterEntry& entry = g_regTable.entries[g_regTable.count];
+        entry.address = obj["registerAddress"] | 0;
+        strncpy(entry.plcTag, obj["plcTag"] | "", 11);
+        entry.plcTag[11] = '\0';
+
+        const char* dt = obj["dataType"] | "W";
+        entry.dataType = parseDataType(dt);
+
+        g_regTable.totalWords += getWordSizeFromType(entry.dataType);
+        g_regTable.count++;
+    }
+
+    if (g_regTable.count > 0) {
+        g_regTable.startAddr = g_regTable.entries[0].address;
+        Serial.printf("[Modbus] %d register yapilandi. Baslangic=%d, ToplamWord=%d\n",
+                      g_regTable.count, g_regTable.startAddr, g_regTable.totalWords);
+    }
+}
+
+void readAndSendRegisters() {
+    if (!g_modbusReady || g_regTable.count == 0) return;
+    if (g_deviceStatus == "offline") return;
+
+    // Toplu FC03 okuma — başlangıç adresinden totalWords kadar
+    uint16_t startAddr = g_regTable.startAddr;
+    uint16_t wordCount = g_regTable.totalWords;
+
+    if (wordCount > 128) wordCount = 128;  // Buffer sınırı
+
+    // Okuma isteği gönder
+    bool success = false;
+    for (uint8_t attempt = 0; attempt <= g_retryCount; attempt++) {
+        if (mb.readHreg(g_slaveId, startAddr, g_regBuffer, wordCount)) {
+            // Yanıt bekle
+            unsigned long start = millis();
+            while (mb.slave()) {
+                mb.task();
+                if (millis() - start > g_modbusTimeout) break;
+                delay(1);
+            }
+            if (!mb.slave()) {
+                success = true;
+                break;
+            }
+        }
+        if (attempt < g_retryCount) {
+            Serial.printf("[Modbus] Retry %d/%d\n", attempt + 1, g_retryCount);
+            delay(50);
+        }
+    }
+
+    if (!success) {
+        Serial.println("[Modbus] Okuma basarisiz — tum retry'lar tukendi.");
+        return;
+    }
+
+    // Veri gönder
+    sendDataToServer();
+}
+
+void sendDataToServer() {
+    if (g_deviceId.isEmpty() || g_deviceStatus == "offline") return;
+    if (WiFi.status() != WL_CONNECTED) return;
+
+    String url = g_serverUrl + "/api/device-data";
+    HTTPClient http;
+    http.begin(url);
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("ngrok-skip-browser-warning", "1");
+
+    JsonDocument doc;
+    doc["deviceId"]  = g_deviceId;
+    doc["type"]      = "plc";
+    doc["subtype"]   = "dvp_ss2";
+    doc["timestamp"] = "";
+
+    JsonObject data = doc["data"].to<JsonObject>();
+    JsonObject regs = data["dataRegisters"].to<JsonObject>();
+
+    // Her register'ı buffer'dan oku ve dataType'a göre parse et
+    uint16_t bufOffset = 0;
+    for (uint8_t i = 0; i < g_regTable.count; i++) {
+        RegisterEntry& entry = g_regTable.entries[i];
+        uint8_t ws = getWordSizeFromType(entry.dataType);
+
+        switch (entry.dataType) {
+            case DT_W: {
+                uint16_t val = g_regBuffer[bufOffset];
+                regs[entry.plcTag] = val;
+                break;
+            }
+            case DT_INT: {
+                int16_t val = (int16_t)g_regBuffer[bufOffset];
+                regs[entry.plcTag] = val;
+                break;
+            }
+            case DT_DW: {
+                // Delta DVP: LOW WORD = regs[0], HIGH WORD = regs[1]
+                uint32_t val = ((uint32_t)g_regBuffer[bufOffset + 1] << 16) | (uint32_t)g_regBuffer[bufOffset];
+                regs[entry.plcTag] = val;
+                break;
+            }
+            case DT_DINT: {
+                uint32_t raw = ((uint32_t)g_regBuffer[bufOffset + 1] << 16) | (uint32_t)g_regBuffer[bufOffset];
+                int32_t val = (int32_t)raw;
+                regs[entry.plcTag] = val;
+                break;
+            }
+            case DT_FLT: {
+                uint32_t raw = ((uint32_t)g_regBuffer[bufOffset + 1] << 16) | (uint32_t)g_regBuffer[bufOffset];
+                float val;
+                memcpy(&val, &raw, sizeof(float));
+                regs[entry.plcTag] = val;
+                break;
+            }
+        }
+        bufOffset += ws;
+    }
+
+    String body;
+    serializeJson(doc, body);
+
+    int httpCode = http.POST(body);
+    if (httpCode == HTTP_CODE_OK) {
+        Serial.printf("[Data] %d register gonderildi.\n", g_regTable.count);
+    } else {
+        Serial.printf("[Data] HTTP %d — gonderilemedi.\n", httpCode);
+    }
+    http.end();
 }
 
 // ─────────────────────────────────────────────
@@ -619,6 +844,8 @@ void setup() {
     }
 
     g_lastHeartbeat = millis();
+    // Modbus başlat (config gelince ayarlar güncellenecek)
+    setupModbus();
     Serial.println("[Setup] Heartbeat moduna hazir.");
 }
 
@@ -639,6 +866,19 @@ void loop() {
     if (now - g_lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
         g_lastHeartbeat = now;
         sendHeartbeat();
+    }
+
+    // Modbus periyodik okuma
+    if (g_modbusReady && g_regTable.count > 0 && g_deviceStatus != "offline") {
+        if (now - g_lastModbusRead >= g_readInterval) {
+            g_lastModbusRead = now;
+            readAndSendRegisters();
+        }
+    }
+
+    // Modbus task — iç işlemleri yürüt
+    if (g_modbusReady) {
+        mb.task();
     }
 
     delay(50);

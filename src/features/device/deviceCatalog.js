@@ -53,6 +53,9 @@ export const DEFAULT_MODBUS_CONFIG = {
   dataBits: 8,
   stopBits: 1,
   parity: 'none',
+  readInterval: 1000,
+  timeout: 500,
+  retryCount: 2,
 }
 
 export const MODBUS_OPTIONS = {
@@ -172,4 +175,24 @@ export function getDeltaYAddresses(count) {
 export const DEFAULT_PLC_IO_CONFIG_V2 = {
   coils: [],
   dataRegisters: [],
+}
+
+/**
+ * Data Register veri tipi seçenekleri
+ */
+export const DATA_TYPE_OPTIONS = [
+  { value: 'W',    label: 'W',    desc: 'Word (uint16)',        wordSize: 1, range: '0 – 65535' },
+  { value: 'INT',  label: 'INT',  desc: 'Integer (int16)',      wordSize: 1, range: '-32768 – 32767' },
+  { value: 'DW',   label: 'DW',   desc: 'Double Word (uint32)', wordSize: 2, range: '0 – 4294967295' },
+  { value: 'DINT', label: 'DINT', desc: 'Double Int (int32)',   wordSize: 2, range: '-2147483648 – 2147483647' },
+  { value: 'FLT',  label: 'FLT',  desc: 'Float (IEEE-754)',     wordSize: 2, range: '±3.4×10³⁸' },
+]
+
+/**
+ * Modbus iletişim zamanlama varsayılanları
+ */
+export const DEFAULT_MODBUS_TIMING = {
+  readInterval: 1000,  // ms — okuma periyodu
+  timeout: 500,        // ms — Modbus timeout
+  retryCount: 2,       // tekrar deneme sayısı
 }

@@ -19,8 +19,8 @@ export const DEFAULT_ANALOG_ROW = {
 
 export const DEFAULT_REGISTER_ROW = {
   plcTag: '',
-  registerAddress: 0,
-  length: 1,
+  registerAddress: 4096,
+  dataType: 'W',
   tagName: '',
   description: '',
 }
@@ -49,15 +49,77 @@ export function resizeArray(arr, newCount, defaultRow) {
  */
 export function normalizeConfig(raw) {
   if (!raw || typeof raw !== 'object') {
-    return { coils: [], analogChannels: [], dataRegisters: [] }
+    return { coils: [], dataRegisters: [] }
   }
   // Yeni format
   if ('coils' in raw || 'dataRegisters' in raw) {
     return {
       coils:         Array.isArray(raw.coils)         ? raw.coils         : [],
-      dataRegisters: Array.isArray(raw.dataRegisters) ? raw.dataRegisters : [],
+      dataRegisters: migrateLegacyRegisters(Array.isArray(raw.dataRegisters) ? raw.dataRegisters : []),
     }
   }
   // Eski format → boş
   return { coils: [], dataRegisters: [] }
+}
+
+/**
+ * Veri tipinin word boyutunu döner.
+ * W, INT → 1 word; DW, DINT, FLT → 2 word
+ */
+export function getWordSize(dataType) {
+  return ['DW', 'DINT', 'FLT'].includes(dataType) ? 2 : 1
+}
+
+/**
+ * Register dizisi ve başlangıç adresinden tüm satırların
+ * registerAddress ve plcTag değerlerini otomatik hesaplar.
+ * @param {Array} registers - [{dataType, tagName, description, ...}]
+ * @param {number} startAddress - İlk satırın register adresi (default: 4096)
+ * @returns {Array} - Hesaplanmış registerAddress ve plcTag ile zenginleştirilmiş dizi
+ */
+export function computeAutoAddresses(registers, startAddress = 4096) {
+  let currentAddr = startAddress
+  return registers.map((reg) => {
+    const ws = getWordSize(reg.dataType || 'W')
+    const result = {
+      ...reg,
+      registerAddress: currentAddr,
+      plcTag: `D${currentAddr - 4096}`,
+    }
+    currentAddr += ws
+    return result
+  })
+}
+
+/**
+ * Register dizisinin toplam word sayısını hesaplar.
+ */
+export function computeTotalWords(registers) {
+  return registers.reduce((sum, reg) => sum + getWordSize(reg.dataType || 'W'), 0)
+}
+
+/**
+ * Sayısal değeri min/max aralığına sıkıştırır.
+ */
+export function clampValue(value, min, max) {
+  if (value < min) return min
+  if (value > max) return max
+  return value
+}
+
+/**
+ * Eski format (length alanı) kayıtlarını yeni formata (dataType) dönüştürür.
+ * length=1 → "W", length=2 → "DW"
+ * Zaten dataType alanı varsa dokunmaz.
+ */
+export function migrateLegacyRegisters(registers) {
+  if (!Array.isArray(registers)) return []
+  return registers.map((reg) => {
+    if (reg.length !== undefined && reg.dataType === undefined) {
+      const dataType = reg.length >= 2 ? 'DW' : 'W'
+      const { length, ...rest } = reg
+      return { ...rest, dataType }
+    }
+    return reg
+  })
 }

@@ -23,7 +23,7 @@ def _normalize_io(raw) -> dict:
 
 # ESP32'nin ihtiyacı olan alanlar — tagName ve description gönderilmez
 _ESP32_COIL_FIELDS    = {"plcTag", "coilAddress"}
-_ESP32_REG_FIELDS     = {"plcTag", "registerAddress", "length"}
+_ESP32_REG_FIELDS     = {"plcTag", "registerAddress", "dataType"}
 
 
 def _extract_esp32_fields(rows: list, fields: set) -> list:

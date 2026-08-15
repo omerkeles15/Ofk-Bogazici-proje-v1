@@ -504,6 +504,27 @@ export default function AdminCompanyDetail() {
                       {MODBUS_OPTIONS.parity.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
                     </select>
                   </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Okuma Periyodu (ms)</label>
+                    <input type="number" min={100} max={60000}
+                      className="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                      value={devForm.modbusConfig?.readInterval ?? 1000}
+                      onChange={(e) => setDevForm({ ...devForm, modbusConfig: { ...devForm.modbusConfig, readInterval: Math.max(100, Math.min(60000, Number(e.target.value) || 1000)) } })} />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Timeout (ms)</label>
+                    <input type="number" min={50} max={5000}
+                      className="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                      value={devForm.modbusConfig?.timeout ?? 500}
+                      onChange={(e) => setDevForm({ ...devForm, modbusConfig: { ...devForm.modbusConfig, timeout: Math.max(50, Math.min(5000, Number(e.target.value) || 500)) } })} />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Retry</label>
+                    <input type="number" min={0} max={5}
+                      className="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                      value={devForm.modbusConfig?.retryCount ?? 2}
+                      onChange={(e) => setDevForm({ ...devForm, modbusConfig: { ...devForm.modbusConfig, retryCount: Math.max(0, Math.min(5, Number(e.target.value) || 2)) } })} />
+                  </div>
                 </div>
               </div>
             )}
@@ -683,6 +704,27 @@ export default function AdminCompanyDetail() {
                       onChange={(e) => setDevForm({ ...devForm, modbusConfig: { ...devForm.modbusConfig, parity: e.target.value } })}>
                       {MODBUS_OPTIONS.parity.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
                     </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Okuma Periyodu (ms)</label>
+                    <input type="number" min={100} max={60000}
+                      className="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                      value={devForm.modbusConfig?.readInterval ?? 1000}
+                      onChange={(e) => setDevForm({ ...devForm, modbusConfig: { ...devForm.modbusConfig, readInterval: Math.max(100, Math.min(60000, Number(e.target.value) || 1000)) } })} />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Timeout (ms)</label>
+                    <input type="number" min={50} max={5000}
+                      className="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                      value={devForm.modbusConfig?.timeout ?? 500}
+                      onChange={(e) => setDevForm({ ...devForm, modbusConfig: { ...devForm.modbusConfig, timeout: Math.max(50, Math.min(5000, Number(e.target.value) || 500)) } })} />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Retry</label>
+                    <input type="number" min={0} max={5}
+                      className="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                      value={devForm.modbusConfig?.retryCount ?? 2}
+                      onChange={(e) => setDevForm({ ...devForm, modbusConfig: { ...devForm.modbusConfig, retryCount: Math.max(0, Math.min(5, Number(e.target.value) || 2)) } })} />
                   </div>
                 </div>
               </div>
