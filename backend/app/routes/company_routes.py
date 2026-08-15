@@ -37,25 +37,9 @@ async def _notify_esp32_if_linked(dev: Device, db, force_full: bool = False):
             if comp:
                 company_name = comp.display_name
 
-    # İlk bağlantı veya force_full → full payload
-    old_config_json = esp32.config_json
-    if not old_config_json or force_full:
-        payload = build_full_config_payload(dev, company_name, location_name)
-    else:
-        # Önceki config'den eski plc_io_config'i çıkar
-        try:
-            import json as _json
-            old_config = _json.loads(old_config_json)
-            old_plc_io = old_config.get("plc_io_config")
-        except Exception:
-            old_plc_io = None
-
-        diff_payload = build_diff_config_payload(dev, old_plc_io)
-        if diff_payload is None:
-            # Değişen yoksa sadece device_status güncelle
-            payload = {"device_id": dev.id, "device_status": dev.status, "diff": False, "no_change": True}
-        else:
-            payload = {**diff_payload, "device_status": dev.status}
+    # Her zaman full config gönder — diff mantığı firmware tarafında sorun çıkarıyordu
+    # Güvenli yaklaşım: ESP32 tam config alır, register tablosunu sıfırdan oluşturur
+    payload = build_full_config_payload(dev, company_name, location_name)
 
     import json as _json
     esp32.config_json = _json.dumps(payload, ensure_ascii=False)

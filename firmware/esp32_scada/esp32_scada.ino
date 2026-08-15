@@ -87,8 +87,10 @@ String buildWifiOptions();
 String buildProvisioningPage(const String& statusMsg = "");
 bool checkDoubleReset();
 void setupModbus();
-void readAndSendRegisters();
-void readAndSendCoils();
+void readModbusAndSend();
+bool modbusReadCoils();
+bool modbusReadRegisters();
+bool modbusWaitResponse(uint32_t timeoutMs);
 void parseDataRegisters(JsonArray arr);
 void parseCoils(JsonArray arr);
 void sendDataToServer();
@@ -534,77 +536,84 @@ void parseCoils(JsonArray arr) {
     }
 }
 
-void readAndSendRegisters() {
-    if (!g_modbusReady || g_regTable.count == 0) return;
-    if (g_deviceStatus == "offline") return;
 
-    // Toplu FC03 okuma — başlangıç adresinden totalWords kadar
-    uint16_t startAddr = g_regTable.startAddr;
-    uint16_t wordCount = g_regTable.totalWords;
 
-    if (wordCount > 128) wordCount = 128;  // Buffer sınırı
+// ─────────────────────────────────────────────
+// Modbus Sıralı Okuma — Çakışmasız Tek İşlem
+// ─────────────────────────────────────────────
+// Mühendislik yaklaşımı: Half-duplex RS485 hattında
+// bir anda tek istek olmalı. Önce Coil (FC01), yanıt
+// alındıktan sonra Register (FC03), ardından veri gönderimi.
 
-    // Okuma isteği gönder
-    bool success = false;
+bool modbusWaitResponse(uint32_t timeoutMs) {
+    unsigned long start = millis();
+    while (mb.slave()) {
+        mb.task();
+        if (millis() - start > timeoutMs) return false;
+        delay(1);
+    }
+    return true;
+}
+
+bool modbusReadCoils() {
+    if (g_coilTable.count == 0) return true;  // Okuma gerekmiyor, başarılı say
+
+    uint16_t startAddr = g_coilTable.startAddr;
+    uint8_t  count     = min((uint8_t)128, g_coilTable.count);
+
     for (uint8_t attempt = 0; attempt <= g_retryCount; attempt++) {
-        if (mb.readHreg(g_slaveId, startAddr, g_regBuffer, wordCount)) {
-            // Yanıt bekle
-            unsigned long start = millis();
-            while (mb.slave()) {
-                mb.task();
-                if (millis() - start > g_modbusTimeout) break;
-                delay(1);
-            }
-            if (!mb.slave()) {
-                success = true;
-                break;
+        if (mb.readCoil(g_slaveId, startAddr, g_coilBuffer, count)) {
+            if (modbusWaitResponse(g_modbusTimeout)) {
+                return true;
             }
         }
         if (attempt < g_retryCount) {
-            Serial.printf("[Modbus] Retry %d/%d\n", attempt + 1, g_retryCount);
+            Serial.printf("[Modbus] Coil retry %d/%d\n", attempt + 1, g_retryCount);
             delay(50);
         }
     }
-
-    if (!success) {
-        Serial.println("[Modbus] Okuma basarisiz — tum retry'lar tukendi.");
-        return;
-    }
-
-    // Veri gönder
-    sendDataToServer();
+    Serial.println("[Modbus] Coil okuma basarisiz.");
+    return false;
 }
 
-void readAndSendCoils() {
-    if (!g_modbusReady || g_coilTable.count == 0) return;
-    if (g_deviceStatus == "offline") return;
+bool modbusReadRegisters() {
+    if (g_regTable.count == 0) return true;  // Okuma gerekmiyor
 
-    uint16_t startAddr = g_coilTable.startAddr;
-    uint8_t  count     = g_coilTable.count;
+    uint16_t startAddr = g_regTable.startAddr;
+    uint16_t wordCount = min((uint16_t)128, g_regTable.totalWords);
 
-    if (count > 128) count = 128;
-
-    // FC01: Read Coils
-    bool success = false;
     for (uint8_t attempt = 0; attempt <= g_retryCount; attempt++) {
-        if (mb.readCoil(g_slaveId, startAddr, g_coilBuffer, count)) {
-            unsigned long start = millis();
-            while (mb.slave()) {
-                mb.task();
-                if (millis() - start > g_modbusTimeout) break;
-                delay(1);
-            }
-            if (!mb.slave()) {
-                success = true;
-                break;
+        if (mb.readHreg(g_slaveId, startAddr, g_regBuffer, wordCount)) {
+            if (modbusWaitResponse(g_modbusTimeout)) {
+                return true;
             }
         }
-        if (attempt < g_retryCount) delay(50);
+        if (attempt < g_retryCount) {
+            Serial.printf("[Modbus] Reg retry %d/%d\n", attempt + 1, g_retryCount);
+            delay(50);
+        }
     }
+    Serial.println("[Modbus] Register okuma basarisiz.");
+    return false;
+}
 
-    if (!success) {
-        Serial.println("[Modbus] Coil okuma basarisiz.");
-        return;
+void readModbusAndSend() {
+    if (!g_modbusReady) return;
+    if (g_deviceStatus == "offline") return;
+    if (g_coilTable.count == 0 && g_regTable.count == 0) return;
+
+    // Adım 1: Coil oku (FC01) — yanıt gelene kadar bekle
+    bool coilOk = modbusReadCoils();
+
+    // Adım 2: Küçük bekleme — hat boşalsın (turnaround delay)
+    delay(20);
+
+    // Adım 3: Register oku (FC03) — yanıt gelene kadar bekle
+    bool regOk = modbusReadRegisters();
+
+    // Adım 4: Herhangi biri başarılıysa sunucuya gönder
+    if (coilOk || regOk) {
+        sendDataToServer();
     }
 }
 
@@ -966,12 +975,11 @@ void loop() {
         sendHeartbeat();
     }
 
-    // Modbus periyodik okuma (register + coil)
+    // Modbus periyodik okuma — sıralı, çakışmasız
     if (g_modbusReady && g_deviceStatus != "offline") {
         if (now - g_lastModbusRead >= g_readInterval) {
             g_lastModbusRead = now;
-            if (g_coilTable.count > 0) readAndSendCoils();
-            if (g_regTable.count > 0)  readAndSendRegisters();
+            readModbusAndSend();
         }
     }
 
