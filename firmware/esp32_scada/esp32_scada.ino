@@ -388,12 +388,27 @@ void sendHeartbeat() {
                     g_sendStatusAck    = true;
                     g_pendingStatusAck = g_deviceStatus;
                 }
-                // dataRegisters ve modbus_config parse et
-                if (!cfg["plc_io_config"].isNull()) {
-                    JsonObject plcIo = cfg["plc_io_config"].as<JsonObject>();
-                    if (!plcIo["dataRegisters"].isNull()) {
-                        JsonArray regArr = plcIo["dataRegisters"].as<JsonArray>();
-                        parseDataRegisters(regArr);
+                // dataRegisters parse — full config veya diff config
+                bool isDiff = cfg["diff"] | false;
+                if (isDiff) {
+                    // Diff config: changed.dataRegisters
+                    if (!cfg["changed"].isNull()) {
+                        JsonObject changed = cfg["changed"].as<JsonObject>();
+                        if (!changed["dataRegisters"].isNull()) {
+                            JsonArray regArr = changed["dataRegisters"].as<JsonArray>();
+                            parseDataRegisters(regArr);
+                            Serial.println("[Config] Diff: dataRegisters guncellendi.");
+                        }
+                    }
+                } else {
+                    // Full config: plc_io_config.dataRegisters
+                    if (!cfg["plc_io_config"].isNull()) {
+                        JsonObject plcIo = cfg["plc_io_config"].as<JsonObject>();
+                        if (!plcIo["dataRegisters"].isNull()) {
+                            JsonArray regArr = plcIo["dataRegisters"].as<JsonArray>();
+                            parseDataRegisters(regArr);
+                            Serial.println("[Config] Full: dataRegisters yuklendi.");
+                        }
                     }
                 }
                 if (!cfg["modbus_config"].isNull()) {
