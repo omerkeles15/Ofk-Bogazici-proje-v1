@@ -359,9 +359,9 @@ async def add_device(cid: int, lid: int, body: DeviceCreateSchema, db: AsyncSess
     await db.commit()
     await db.refresh(dev)
     await cache_delete("companies:*")
-    # I/O veya status değişikliği → bağlı ESP32'ye bildir
+    # I/O veya status değişikliği → bağlı ESP32'ye bildir (her zaman full config)
     if body.plcIoConfig is not None or body.status is not None:
-        await _notify_esp32_if_linked(dev, db)
+        await _notify_esp32_if_linked(dev, db, force_full=True)
     return _device_to_dict(dev)
 
 
@@ -434,7 +434,7 @@ async def update_device(cid: int, lid: int, device_id: str, body: DeviceUpdateSc
     await db.commit()
     await db.refresh(dev)
     await cache_delete("companies:*")
-    # I/O veya status değişikliği → bağlı ESP32'ye bildir
+    # I/O veya status değişikliği → bağlı ESP32'ye bildir (her zaman full config)
     if body.plcIoConfig is not None or body.status is not None:
-        await _notify_esp32_if_linked(dev, db)
+        await _notify_esp32_if_linked(dev, db, force_full=True)
     return _device_to_dict(dev)
